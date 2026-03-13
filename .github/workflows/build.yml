@@ -25,14 +25,16 @@ jobs:
                 -miphoneos-version-min=14.0 \
                 -framework UIKit \
                 -framework Foundation \
+                -framework CoreGraphics \
+                -framework QuartzCore \
                 -dynamiclib \
                 -fobjc-arc \
                 -install_name @rpath/PoolHelperMenu.dylib \
                 -O2 \
                 -o build/PoolHelperMenu.dylib \
                 src/PoolHelperMenu.m
-          echo "Built: build/PoolHelperMenu.dylib"
-          ls -lh build/
+          echo "Built successfully:"
+          ls -lh build/PoolHelperMenu.dylib
 
       - name: Upload PoolHelperMenu.dylib
         uses: actions/upload-artifact@v4
