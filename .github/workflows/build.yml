@@ -1,4 +1,4 @@
-name: Build PoolHelperMenu.dylib
+name: Build iOS Dynamic Libraries
 
 on:
   push:
@@ -16,17 +16,54 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Show SDK path
+      - name: Get SDK path
         run: xcrun --sdk iphoneos --show-sdk-path
 
       - name: Build PoolHelperMenu.dylib
         run: |
-          chmod +x build.sh
-          ./build.sh
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p build
+          clang -arch arm64 \
+                -isysroot "$SDK" \
+                -miphoneos-version-min=14.0 \
+                -framework UIKit \
+                -framework Foundation \
+                -framework QuartzCore \
+                -dynamiclib \
+                -fobjc-arc \
+                -install_name @rpath/PoolHelperMenu.dylib \
+                -O2 \
+                -o build/PoolHelperMenu.dylib \
+                src/PoolHelperMenu.m
+          echo "Built: build/PoolHelperMenu.dylib"
 
-      - name: Upload dylib artifact
+      - name: Build FloatingMenu.dylib
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p build
+          clang -arch arm64 \
+                -isysroot "$SDK" \
+                -miphoneos-version-min=14.0 \
+                -framework UIKit \
+                -framework Foundation \
+                -dynamiclib \
+                -fobjc-arc \
+                -install_name @rpath/FloatingMenu.dylib \
+                -O2 \
+                -o build/FloatingMenu.dylib \
+                src/FloatingMenu.m
+          echo "Built: build/FloatingMenu.dylib"
+
+      - name: Upload PoolHelperMenu.dylib
         uses: actions/upload-artifact@v4
         with:
           name: PoolHelperMenu-dylib
           path: build/PoolHelperMenu.dylib
+          if-no-files-found: error
+
+      - name: Upload FloatingMenu.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatingMenu-dylib
+          path: build/FloatingMenu.dylib
           if-no-files-found: error
