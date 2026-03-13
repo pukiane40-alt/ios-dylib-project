@@ -1,0 +1,32 @@
+name: Build PoolHelperMenu.dylib
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Show SDK path
+        run: xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build PoolHelperMenu.dylib
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload dylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PoolHelperMenu-dylib
+          path: build/PoolHelperMenu.dylib
+          if-no-files-found: error
