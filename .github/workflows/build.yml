@@ -16,7 +16,7 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Build FloatingMenu.dylib
+      - name: Build PoolHelperMenu.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p build
@@ -27,15 +27,16 @@ jobs:
                 -framework Foundation \
                 -dynamiclib \
                 -fobjc-arc \
-                -install_name @rpath/FloatingMenu.dylib \
+                -install_name @rpath/PoolHelperMenu.dylib \
                 -O2 \
-                -o build/FloatingMenu.dylib \
-                src/FloatingMenu.m
-          echo "Built: build/FloatingMenu.dylib"
+                -o build/PoolHelperMenu.dylib \
+                src/PoolHelperMenu.m
+          echo "Built: build/PoolHelperMenu.dylib"
+          ls -lh build/
 
-      - name: Upload FloatingMenu.dylib
+      - name: Upload PoolHelperMenu.dylib
         uses: actions/upload-artifact@v4
         with:
-          name: FloatingMenu-dylib
-          path: build/FloatingMenu.dylib
+          name: PoolHelperMenu-dylib
+          path: build/PoolHelperMenu.dylib
           if-no-files-found: error
