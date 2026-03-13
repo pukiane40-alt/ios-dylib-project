@@ -1,4 +1,4 @@
-name: Build iOS Dynamic Libraries
+name: Build iOS Dynamic Library
 
 on:
   push:
@@ -16,27 +16,6 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Get SDK path
-        run: xcrun --sdk iphoneos --show-sdk-path
-
-      - name: Build PoolHelperMenu.dylib
-        run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p build
-          clang -arch arm64 \
-                -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 \
-                -framework UIKit \
-                -framework Foundation \
-                -framework QuartzCore \
-                -dynamiclib \
-                -fobjc-arc \
-                -install_name @rpath/PoolHelperMenu.dylib \
-                -O2 \
-                -o build/PoolHelperMenu.dylib \
-                src/PoolHelperMenu.m
-          echo "Built: build/PoolHelperMenu.dylib"
-
       - name: Build FloatingMenu.dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -53,13 +32,6 @@ jobs:
                 -o build/FloatingMenu.dylib \
                 src/FloatingMenu.m
           echo "Built: build/FloatingMenu.dylib"
-
-      - name: Upload PoolHelperMenu.dylib
-        uses: actions/upload-artifact@v4
-        with:
-          name: PoolHelperMenu-dylib
-          path: build/PoolHelperMenu.dylib
-          if-no-files-found: error
 
       - name: Upload FloatingMenu.dylib
         uses: actions/upload-artifact@v4
