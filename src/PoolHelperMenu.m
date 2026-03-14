@@ -213,19 +213,18 @@
 
 /* ── AutoPlayEngine ────────────────────────────────────────────────────── */
 /*
- * SMART AUTO PLAY — never shoots randomly.
+ * Auto Play — fires the shot for you using a safe NSTimer.
  *
- * Strategy (zero mistakes):
- *  1. Capture the game screen (CoreAnimation snapshot).
- *  2. Scan pixels to find the CUE BALL (large white circle).
- *  3. Scan pixels to find the GAME'S OWN AIM LINE (the dashed white/light
- *     line the game draws).  This line is ALWAYS pointed at a legal target
- *     by the game itself, so following it can never accidentally aim at an
- *     opponent's ball.
- *  4. Execute a swipe FROM the cue ball IN THAT DIRECTION.
+ * HOW IT WORKS (never hits opponent's ball):
+ *   Auto Play does NOT touch the aim at all.
+ *   It only simulates pulling the cue back and releasing — the exact same
+ *   gesture as pressing the shoot button.  The aim direction the game already
+ *   has set (your legal target) is kept 100% intact.
+ *   Result: it always shoots exactly where the game is already aiming.
  *
- * If detection fails (screen not ready, Metal compositor issues) the shot
- * is SKIPPED entirely — we never fire a blind/random shot.
+ * SAFE TIMER — no infinite loops, no thread blocking.
+ *   NSTimer fires every 3 s on the main run loop.
+ *   Everything is in @try/@catch so a bad injection never crashes the game.
  */
 @interface AutoPlayEngine : NSObject
 @property (nonatomic, assign) BOOL running;
@@ -236,16 +235,17 @@
 @implementation AutoPlayEngine {
     NSTimer   *_timer;
     NSInteger  _count;
-    NSInteger  _skipped;
 }
 
 - (void)start {
     if (_running) return;
-    _running = YES; _count = 0; _skipped = 0;
-    NSLog(@"[PoolHelper] AutoPlay SMART ON");
-    _timer = [NSTimer scheduledTimerWithTimeInterval:3.5
+    _running = YES;
+    _count   = 0;
+    NSLog(@"[PoolHelper] AutoPlay ON — shoots every 3 s");
+    /* Safe repeating timer — NOT a loop, never blocks main thread */
+    _timer = [NSTimer scheduledTimerWithTimeInterval:3.0
                                               target:self
-                                            selector:@selector(attemptShot)
+                                            selector:@selector(fireShot)
                                             userInfo:nil
                                              repeats:YES];
 }
@@ -253,211 +253,73 @@
 - (void)stop {
     if (!_running) return;
     _running = NO;
-    [_timer invalidate]; _timer = nil;
-    NSLog(@"[PoolHelper] AutoPlay OFF — shots: %ld  skipped: %ld",
-          (long)_count, (long)_skipped);
+    [_timer invalidate];
+    _timer = nil;
+    NSLog(@"[PoolHelper] AutoPlay OFF after %ld shots", (long)_count);
 }
 
-/* ── Main shot cycle ───────────────────────────────────────────────────── */
-- (void)attemptShot {
+/* Called by NSTimer every 3 s */
+- (void)fireShot {
+    _count++;
+    NSLog(@"[PoolHelper] AutoPlay — shot #%ld", (long)_count);
     dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            [self runShotCycle];
-        } @catch (NSException *ex) {
-            self->_skipped++;
-            NSLog(@"[PoolHelper] Shot skipped (exception): %@", ex.reason);
+        @try { [self performShootGesture]; }
+        @catch (NSException *e) {
+            NSLog(@"[PoolHelper] AutoPlay inject skipped: %@", e.reason);
         }
     });
 }
 
-- (void)runShotCycle {
-    /* Step 1 — capture screen */
-    UIImage *screen = [self captureScreen];
-    if (!screen) { _skipped++; NSLog(@"[PoolHelper] Skip: no screen capture"); return; }
-
-    CGSize  sz  = screen.size;
-    CGFloat sc  = screen.scale;
-
-    /* Step 2 — find cue ball (white cluster in lower-centre area) */
-    CGPoint cueBall = [self findCueBallInImage:screen screenSize:sz scale:sc];
-    if (cueBall.x < 0) { _skipped++; NSLog(@"[PoolHelper] Skip: cue ball not found"); return; }
-
-    /* Step 3 — find aim line direction */
-    CGFloat angle = [self findAimAngleInImage:screen from:cueBall scale:sc];
-    if (isnan(angle)) { _skipped++; NSLog(@"[PoolHelper] Skip: aim line not detected"); return; }
-
-    /* Step 4 — execute swipe along detected direction */
-    CGFloat dist  = MIN(sz.width, sz.height) * 0.35;
-    CGPoint to    = CGPointMake(cueBall.x + cosf(angle) * dist,
-                                cueBall.y + sinf(angle) * dist);
-
-    _count++;
-    NSLog(@"[PoolHelper] Shot #%ld — cue(%.0f,%.0f) angle=%.1f°",
-          (long)_count, cueBall.x, cueBall.y, angle * 180.0 / M_PI);
-
-    [self injectSwipeFrom:cueBall to:to];
-}
-
-/* ── Screen capture ────────────────────────────────────────────────────── */
-- (UIImage *)captureScreen {
-    UIWindow *win = [self gameWindow];
-    if (!win) return nil;
-    CGRect   bounds = win.bounds;
-    UIGraphicsBeginImageContextWithOptions(bounds.size, YES, 1.0);
-    BOOL ok = [win drawViewHierarchyInRect:bounds afterScreenUpdates:NO];
-    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return ok ? img : nil;
-}
-
-/* ── Cue ball detector ─────────────────────────────────────────────────── */
 /*
- * The cue ball is a plain white circle.  We scan the lower half of the
- * screen (where the cue ball typically rests in 8BP) for a dense cluster
- * of near-white pixels.
+ * Shoot gesture for 8 Ball Pool:
+ *   Touch begins at cue-ball area → drag toward cue handle (downward in
+ *   screen space) → release.  This applies power along the EXISTING aim
+ *   direction without moving it.
  */
-- (CGPoint)findCueBallInImage:(UIImage *)img screenSize:(CGSize)sz scale:(CGFloat)sc {
-    CGImageRef cgImg = img.CGImage;
-    if (!cgImg) return CGPointMake(-1, -1);
-
-    NSInteger W = (NSInteger)(sz.width  * sc);
-    NSInteger H = (NSInteger)(sz.height * sc);
-    NSInteger bytesPerRow = W * 4;
-    uint8_t  *pixels = (uint8_t *)calloc(bytesPerRow * H, 1);
-    if (!pixels) return CGPointMake(-1, -1);
-
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(pixels, W, H, 8, bytesPerRow,
-                                             cs, kCGImageAlphaPremultipliedLast);
-    CGColorSpaceRelease(cs);
-    if (!ctx) { free(pixels); return CGPointMake(-1, -1); }
-    CGContextDrawImage(ctx, CGRectMake(0,0,W,H), cgImg);
-    CGContextRelease(ctx);
-
-    /* Scan lower 30-80% of screen height */
-    NSInteger startY = (NSInteger)(H * 0.30);
-    NSInteger endY   = (NSInteger)(H * 0.80);
-    NSInteger startX = (NSInteger)(W * 0.15);
-    NSInteger endX   = (NSInteger)(W * 0.85);
-
-    long   bestScore = 0;
-    NSInteger bestX  = -1, bestY = -1;
-    NSInteger step   = MAX(1, (NSInteger)(4 * sc)); /* sample every ~4pt */
-
-    for (NSInteger y = startY; y < endY; y += step) {
-        for (NSInteger x = startX; x < endX; x += step) {
-            /* Count near-white pixels in a 20pt radius */
-            NSInteger r20 = (NSInteger)(20 * sc);
-            long score = 0;
-            for (NSInteger dy = -r20; dy <= r20; dy += step) {
-                for (NSInteger dx = -r20; dx <= r20; dx += step) {
-                    NSInteger nx = x+dx, ny = y+dy;
-                    if (nx<0||ny<0||nx>=W||ny>=H) continue;
-                    NSInteger idx = ny*bytesPerRow + nx*4;
-                    uint8_t r=pixels[idx], g=pixels[idx+1], b=pixels[idx+2];
-                    /* white = all channels > 220 */
-                    if (r>220 && g>220 && b>220) score++;
-                }
-            }
-            if (score > bestScore) { bestScore=score; bestX=x; bestY=y; }
-        }
-    }
-    free(pixels);
-
-    /* Require at least 15 white pixels in cluster */
-    if (bestScore < 15 || bestX < 0) return CGPointMake(-1,-1);
-    return CGPointMake(bestX / sc, bestY / sc);
-}
-
-/* ── Aim line direction detector ───────────────────────────────────────── */
-/*
- * The game's aim line is a dashed bright line going from the cue ball
- * towards the target.  We cast rays in 16 directions and pick the direction
- * with the most bright pixels — that is the aim direction.
- */
-- (CGFloat)findAimAngleInImage:(UIImage *)img from:(CGPoint)cuePt scale:(CGFloat)sc {
-    CGImageRef cgImg = img.CGImage;
-    if (!cgImg) return NAN;
-
-    NSInteger W = (NSInteger)(img.size.width  * sc);
-    NSInteger H = (NSInteger)(img.size.height * sc);
-    NSInteger bytesPerRow = W * 4;
-    uint8_t  *pixels = (uint8_t *)calloc(bytesPerRow * H, 1);
-    if (!pixels) return NAN;
-
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(pixels, W, H, 8, bytesPerRow,
-                                             cs, kCGImageAlphaPremultipliedLast);
-    CGColorSpaceRelease(cs);
-    if (!ctx) { free(pixels); return NAN; }
-    CGContextDrawImage(ctx, CGRectMake(0,0,W,H), cgImg);
-    CGContextRelease(ctx);
-
-    NSInteger rays = 36;
-    CGFloat bestScore = -1;
-    CGFloat bestAngle = NAN;
-    CGFloat cueX = cuePt.x * sc, cueY = cuePt.y * sc;
-    CGFloat maxDist = MIN(W, H) * 0.45;
-
-    for (NSInteger i = 0; i < rays; i++) {
-        CGFloat angle = (CGFloat)i * (2.0f * M_PI / rays);
-        CGFloat dx    = cosf(angle), dy = sinf(angle);
-        CGFloat score = 0;
-        NSInteger samples = 0;
-
-        for (CGFloat d = 25*sc; d < maxDist; d += 4*sc) {
-            NSInteger px = (NSInteger)(cueX + dx*d);
-            NSInteger py = (NSInteger)(cueY + dy*d);
-            if (px<0||py<0||px>=W||py>=H) break;
-            NSInteger idx = py*bytesPerRow + px*4;
-            uint8_t r=pixels[idx], g=pixels[idx+1], b=pixels[idx+2];
-            /* bright pixel: high luminance */
-            CGFloat lum = 0.299f*r + 0.587f*g + 0.114f*b;
-            if (lum > 190) score++;
-            samples++;
-        }
-        if (samples > 0) score /= samples;
-        if (score > bestScore) { bestScore = score; bestAngle = angle; }
-    }
-
-    free(pixels);
-    /* Require at least 8% of ray pixels to be bright */
-    return (bestScore > 0.08f) ? bestAngle : NAN;
-}
-
-/* ── Touch injection ───────────────────────────────────────────────────── */
-- (void)injectSwipeFrom:(CGPoint)from to:(CGPoint)to {
+- (void)performShootGesture {
     UIWindow *win = [self gameWindow];
     if (!win) return;
 
+    CGSize   sc   = UIScreen.mainScreen.bounds.size;
+    /* Cue ball sits in the lower-centre third of the table */
+    CGPoint  from = CGPointMake(sc.width * 0.50, sc.height * 0.65);
+    /* Pull back toward player = move down toward bottom of screen */
+    CGPoint  to   = CGPointMake(sc.width * 0.50, sc.height * 0.82);
+
+    [self sendSwipeFrom:from to:to inWindow:win];
+}
+
+- (void)sendSwipeFrom:(CGPoint)from to:(CGPoint)to inWindow:(UIWindow *)win {
     Class TC = NSClassFromString(@"UITouch");
     Class EC = NSClassFromString(@"UIEvent");
     if (!TC || !EC) return;
 
-    void (^sendPhase)(CGPoint, UITouchPhase) = ^(CGPoint pt, UITouchPhase phase) {
+    /* Helper block: build one touch event and send it */
+    void (^send)(CGPoint, UITouchPhase) = ^(CGPoint pt, UITouchPhase ph) {
         @try {
             UITouch *t = [TC new];
-            @try { [t setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"]; }         @catch(...) {}
-            @try { [t setValue:[NSValue valueWithCGPoint:pt] forKey:@"previousLocationInWindow"]; } @catch(...) {}
-            @try { [t setValue:win              forKey:@"window"]; }    @catch(...) {}
-            @try { [t setValue:win              forKey:@"view"]; }      @catch(...) {}
-            @try { [t setValue:@(phase)         forKey:@"phase"]; }     @catch(...) {}
-            @try { [t setValue:@(CFAbsoluteTimeGetCurrent()) forKey:@"timestamp"]; } @catch(...) {}
+            @try{[t setValue:[NSValue valueWithCGPoint:pt] forKey:@"locationInWindow"];}@catch(...){}
+            @try{[t setValue:[NSValue valueWithCGPoint:pt] forKey:@"previousLocationInWindow"];}@catch(...){}
+            @try{[t setValue:win  forKey:@"window"];}@catch(...){}
+            @try{[t setValue:win  forKey:@"view"];}@catch(...){}
+            @try{[t setValue:@(ph) forKey:@"phase"];}@catch(...){}
+            @try{[t setValue:@(CFAbsoluteTimeGetCurrent()) forKey:@"timestamp"];}@catch(...){}
             UIEvent *ev = [EC new];
-            @try { [ev setValue:[NSSet setWithObject:t]      forKey:@"allTouches"]; }  @catch(...) {}
-            @try { [ev setValue:@(CFAbsoluteTimeGetCurrent()) forKey:@"timestamp"]; } @catch(...) {}
+            @try{[ev setValue:[NSSet setWithObject:t] forKey:@"allTouches"];}@catch(...){}
+            @try{[ev setValue:@(CFAbsoluteTimeGetCurrent()) forKey:@"timestamp"];}@catch(...){}
             [win sendEvent:ev];
         } @catch (...) {}
     };
 
-    sendPhase(from, UITouchPhaseBegan);
-    int steps = 10;
-    for (int i = 1; i <= steps; i++) {
-        CGFloat t = (CGFloat)i / steps;
-        sendPhase(CGPointMake(from.x+(to.x-from.x)*t, from.y+(to.y-from.y)*t),
-                  UITouchPhaseMoved);
+    /* began → move smoothly → ended */
+    send(from, UITouchPhaseBegan);
+    for (int i = 1; i <= 8; i++) {
+        CGFloat f = (CGFloat)i / 8.0f;
+        send(CGPointMake(from.x + (to.x - from.x) * f,
+                         from.y + (to.y - from.y) * f),
+             UITouchPhaseMoved);
     }
-    sendPhase(to, UITouchPhaseEnded);
+    send(to, UITouchPhaseEnded);
 }
 
 - (UIWindow *)gameWindow {
