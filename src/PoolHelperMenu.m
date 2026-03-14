@@ -639,31 +639,74 @@
 
 /* ── OverlayManager ────────────────────────────────────────────────────── */
 @interface OverlayManager : NSObject
-+(instancetype)shared;
--(void)launch;
++ (instancetype)shared;
+- (void)startLaunchSequence;
 @end
+
 @implementation OverlayManager {
     MenuController *_menu;
     FloatingButton *_btn;
+    NSInteger       _retryCount;
 }
-+(instancetype)shared{
-    static OverlayManager *i; static dispatch_once_t t;
-    dispatch_once(&t,^{i=[OverlayManager new];}); return i;
+
++ (instancetype)shared {
+    static OverlayManager *i;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ i = [OverlayManager new]; });
+    return i;
 }
--(void)launch{
-    NSLog(@"[PoolHelper] Launching");
-    _menu=[MenuController new];
-    _btn=[[FloatingButton alloc]initWithMenu:_menu];
+
+/**
+ * Keep retrying every 0.5 s until UIWindowScene is active (max 30 tries = 15s).
+ * This handles dylib loads that happen before the game UI is ready.
+ */
+- (void)startLaunchSequence {
+    _retryCount = 0;
+    [self tryLaunch];
+}
+
+- (void)tryLaunch {
+    /* Check if we have an active foreground scene with at least one window */
+    UIWindowScene *scene = [self activeScene];
+    BOOL hasWindows = (scene && scene.windows.count > 0);
+
+    if (!hasWindows && _retryCount < 30) {
+        _retryCount++;
+        NSLog(@"[PoolHelper] Waiting for game window... (%ld)", (long)_retryCount);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self tryLaunch];
+        });
+        return;
+    }
+
+    NSLog(@"[PoolHelper] Game window ready — launching menu");
+    _menu = [MenuController new];
+    _btn  = [[FloatingButton alloc] initWithMenu:_menu];
     [_btn show];
-    NSLog(@"[PoolHelper] Ready");
+    NSLog(@"[PoolHelper] 🎱 Pool Helper ready!");
+}
+
+- (UIWindowScene *)activeScene {
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]] &&
+            s.activationState == UISceneActivationStateForegroundActive)
+            return (UIWindowScene *)s;
+    }
+    return nil;
 }
 @end
 
 /* ── Constructor ───────────────────────────────────────────────────────── */
 __attribute__((constructor))
-static void PoolHelperInit(void){
-    NSLog(@"[PoolHelper] Loaded");
-    dispatch_async(dispatch_get_main_queue(),^{
-        [[OverlayManager shared] launch];
+static void PoolHelperInit(void) {
+    NSLog(@"[PoolHelper] Library injected — waiting for game to start");
+    /*
+     * Delay 2 s before first attempt so the game has time to set up its
+     * root UIWindowScene.  tryLaunch then retries every 0.5 s until ready.
+     */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [[OverlayManager shared] startLaunchSequence];
     });
 }
